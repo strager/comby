@@ -405,7 +405,7 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
          anything as prefix to 'def', including '(', and so '(' is not handled
          as a delim.) *)
       let mandatory_prefix = alphanum_delimiter_must_satisfy in
-      (* mandatory_suffix: be more strict with suffix of pening delimiter: don't
+      (* mandatory_suffix: be more strict with suffix of opening delimiter: don't
          use 'any non-alphanum', but instead use whitespace. This since 'def;'
          is undesirable, and 'def.foo' may be intentional. But 'end.' or 'end;'
          probably still refer to a closing delim. *)
@@ -413,7 +413,7 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
       let satisfy_opening_delimiter prev =
         (match prev with
          | Some prev when is_alphanum (Char.to_string prev) -> fail "unsat"
-         (* Try parse whitespace, and we want to cpature its length, in case
+         (* Try parse whitespace, and we want to capture its length, in case
             this is a space between, like 'def def end end'. But in the case
             where there's no space, it means we have just entered the beginning
             of the hole which may start with the 'd' of 'def', but since we
@@ -581,7 +581,21 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
                    'consumes input'), but then fails on \n, and therefore doesn't trigger
                    optional behavior. So make it attempt and when the \n fails, we return
                    []. *)
-                opt [] (attempt hole_semantics)
+                let p = attempt hole_semantics in
+                match acc with
+                | [] -> opt [] p
+                | previous::_ ->
+                  let is_whitespace =
+                    match parse_string previous " " (Match.create ()) with
+                    | Failed _ -> false
+                    | _ -> true
+                  in
+                  begin
+                    if is_whitespace then
+                      opt [] p
+                    else
+                      opt [] p
+                  end
               else
                 hole_semantics
             in
