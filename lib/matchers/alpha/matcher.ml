@@ -211,30 +211,43 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
     >> many comment_parser
     >>= fun result -> f result
 
+  let is_optional () =
+    opt false (char '?' |>> fun _ -> true)
+
   let identifier () =
-    (many (alphanum <|> char '_') |>> String.of_char_list)
+    (many (alphanum <|> char '_' <|> char '?') |>> String.of_char_list)
+
+  let hole_body () =
+    is_optional () >>= fun optional ->
+    identifier () >>= fun identifier ->
+    return (optional, identifier)
 
   let everything_hole_parser () =
-    string ":[" >> identifier () << string "]"
+    string ":[" >> hole_body () << string "]"
 
   let non_space_hole_parser () =
-    string ":[" >> identifier () << string ".]"
+    string ":[" >> hole_body () << string ".]"
 
   let line_hole_parser () =
-    string ":[" >> identifier () << string "\\n]"
+    string ":[" >> hole_body () << string "\\n]"
 
   let blank_hole_parser () =
-    string ":[" >> (many1 blank) >> identifier () << string "]"
+    string ":[" >>
+    is_optional () >>= fun optional ->
+    (many1 blank)
+    >> identifier () >>= fun identifier ->
+    string "]" >>
+    return (optional, identifier)
 
   let alphanum_hole_parser () =
-    string ":[[" >> identifier () << string "]]"
+    string ":[[" >> hole_body () << string "]]"
 
   let reserved_holes () =
-    let alphanum = alphanum_hole_parser () in
-    let everything = everything_hole_parser () in
-    let non_space = non_space_hole_parser () in
-    let blank = blank_hole_parser () in
-    let line = line_hole_parser () in
+    let alphanum = alphanum_hole_parser () |>> snd in
+    let everything = everything_hole_parser () |>> snd in
+    let non_space = non_space_hole_parser () |>> snd in
+    let blank = blank_hole_parser () |>> snd in
+    let line = line_hole_parser () |>> snd in
     [ non_space
     ; line
     ; blank
@@ -511,88 +524,88 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
         let process_hole =
           match parse_string p "_signal_hole" (Match.create ()) with
           | Failed _ -> p
-          | Success result ->
+          | Success Hole { sort; identifier; optional; dimension } ->
             let rest =
               match acc with
               | [] -> eof >>= fun () -> f [""]
               | _ -> sequence_chain acc
             in
-            match result with
-            | Hole Alphanum (identifier, _) ->
-              let allowed =  choice [alphanum; char '_'] |>> String.of_char in
-              let hole_semantics = many1 allowed in
-              record_matches identifier hole_semantics
+            let hole_semantics =
+              match sort with
+              | Alphanum ->
+                let allowed =  choice [alphanum; char '_'] |>> String.of_char in
+                many1 allowed
 
-            | Hole Non_space (identifier, _dimension) ->
-              let allowed =
-                [skip space; reserved_delimiters ()]
-                |> choice
-                |> is_not
-                |>> Char.to_string
-              in
-              let hole_semantics = many1 (not_followed_by rest "" >> allowed) in
-              record_matches identifier hole_semantics
+              | Non_space ->
+                let allowed =
+                  [skip space; reserved_delimiters ()]
+                  |> choice
+                  |> is_not
+                  |>> Char.to_string
+                in
+                many1 (not_followed_by rest "" >> allowed)
 
-            | Hole Line (identifier, _dimension) ->
-              let allowed =
-                many (is_not (char '\n'))
-                |>> fun x -> [(String.of_char_list x)^"\n"]
-              in
-              let hole_semantics = allowed << char '\n' in
-              record_matches identifier hole_semantics
+              | Line ->
+                let allowed =
+                  many (is_not (char '\n'))
+                  |>> fun x -> [(String.of_char_list x)^"\n"]
+                in
+                allowed << char '\n'
 
-            | Hole Blank (identifier, _dimension) ->
-              let allowed = blank |>> String.of_char in
-              let hole_semantics = many1 allowed in
-              record_matches identifier hole_semantics
+              | Blank ->
+                let allowed = blank |>> String.of_char in
+                many1 allowed
 
-            | Hole Everything (identifier, dimension) ->
-              let matcher =
-                match dimension with
-                | Code ->
-                  generate_everything_hole_parser
-                    ?priority_left_delimiter:left_delimiter
-                    ?priority_right_delimiter:right_delimiter
-                | Escapable_string_literal ->
-                  let right_delimiter = Option.value_exn right_delimiter in
-                  escapable_literal_grammar ~right_delimiter
-                | Raw_string_literal ->
-                  let right_delimiter = Option.value_exn right_delimiter in
-                  raw_literal_grammar ~right_delimiter
-                | Comment -> failwith "Unimplemented"
-              in
-              (* Continue until rest, but don't consume rest. *)
-              let hole_semantics = many (not_followed_by rest "" >> matcher) in
-              record_matches identifier hole_semantics
-
-            | _ -> failwith "Hole expected"
+              | Everything ->
+                let matcher =
+                  match dimension with
+                  | Code ->
+                    generate_everything_hole_parser
+                      ?priority_left_delimiter:left_delimiter
+                      ?priority_right_delimiter:right_delimiter
+                  | Escapable_string_literal ->
+                    let right_delimiter = Option.value_exn right_delimiter in
+                    escapable_literal_grammar ~right_delimiter
+                  | Raw_string_literal ->
+                    let right_delimiter = Option.value_exn right_delimiter in
+                    raw_literal_grammar ~right_delimiter
+                  | Comment -> failwith "Unimplemented"
+                in
+                (* Continue until rest, but don't consume rest. *)
+                many (not_followed_by rest "" >> matcher)
+            in
+            let hole_semantics =
+              if optional then
+                (* We do not need "attempt" for any of the holes except for \n, because
+                   the \n hole can match empty string (i.e., many makes progress and
+                   'consumes input'), but then fails on \n, and therefore doesn't trigger
+                   optional behavior. So make it attempt and when the \n fails, we return
+                   []. *)
+                opt [] (attempt hole_semantics)
+              else
+                hole_semantics
+            in
+            record_matches identifier hole_semantics
+          | Success _ -> failwith "Hole expected"
         in
         process_hole::acc)
 
   let hole_parser sort dimension =
-    let skip_signal hole =
-      skip (string "_signal_hole") |>> fun () -> Hole hole
+    let open Hole in
+    let hole_parser =
+      match sort with
+      | Everything -> everything_hole_parser ()
+      | Non_space -> non_space_hole_parser ()
+      | Line -> line_hole_parser ()
+      | Blank -> blank_hole_parser ()
+      | Alphanum -> alphanum_hole_parser ()
     in
-    match sort with
-    | `Everything ->
-      everything_hole_parser () |>> fun id ->
-      skip_signal (Everything (id, dimension))
-    | `Non_space ->
-      non_space_hole_parser () |>> fun id ->
-      skip_signal (Non_space (id, dimension))
-    | `Line ->
-      line_hole_parser () |>> fun id ->
-      skip_signal (Line (id, dimension))
-    | `Blank ->
-      blank_hole_parser () |>> fun id ->
-      skip_signal (Blank (id, dimension))
-    | `Alphanum ->
-      alphanum_hole_parser () |>> fun id ->
-      skip_signal (Alphanum (id, dimension))
+    let skip_signal hole = skip (string "_signal_hole") |>> fun () -> Hole hole in
+    hole_parser |>> fun (optional, identifier) -> skip_signal { sort; identifier; dimension; optional }
 
   let generate_hole_for_literal sort ~contents ~left_delimiter ~right_delimiter s =
     let holes =
-      [`Everything; `Non_space; `Alphanum; `Line; `Blank]
+      Hole.sorts ()
       |> List.map ~f:(fun kind -> attempt (hole_parser kind sort))
     in
     let reserved_holes =
@@ -626,7 +639,7 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
 
   and common _s =
     let holes =
-      [`Everything; `Non_space; `Alphanum; `Line; `Blank]
+      Hole.sorts ()
       |> List.map ~f:(fun kind -> attempt (hole_parser kind Code))
     in
     choice
