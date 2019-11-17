@@ -215,7 +215,7 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
     opt false (char '?' |>> fun _ -> true)
 
   let identifier () =
-    (many (alphanum <|> char '_' <|> char '?') |>> String.of_char_list)
+    (many (alphanum <|> char '_') |>> String.of_char_list)
 
   let hole_body () =
     is_optional () >>= fun optional ->

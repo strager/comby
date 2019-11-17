@@ -64,6 +64,32 @@ let%expect_test "optional_holes_basic_match" =
   [%expect_exact {|//|}]
 
 let%expect_test "optional_holes_match_over_coalesced_whitespace" =
+  let source = {|a c|} in
+  let match_template = {|:[[a]] :[[?b]] :[[c]]|} in
+  let rewrite_template = {|/:[?a]/:[?b]/:[?c]|} in
+  run source match_template rewrite_template;
+  [%expect_exact {|No matches.|}];
+
+  let source = {|a c|} in
+  (* The optional matcher ?b does match c, and then there's nothing left to
+     match c. This is correct behavior wrt the LL parsing. *)
+  let match_template = {|:[[a]] :[[?b]]:[[c]]|} in
+  let rewrite_template = {|/:[?a]/:[?b]/:[?c]|} in
+  run source match_template rewrite_template;
+  [%expect_exact {|No matches.|}];
+
+  let source = {|a c|} in
+  let match_template = {|:[[a]]:[[?b]]:[[c]]|} in
+  let rewrite_template = {|/:[?a]/:[?b]/:[?c]|} in
+  run source match_template rewrite_template;
+  [%expect_exact {|No matches.|}];
+
+  let source = {|a c|} in
+  let match_template = {|:[[a]]:[[?b]] :[[?c]]|} in
+  let rewrite_template = {|/:[?a]/:[?b]/:[?c]|} in
+  run source match_template rewrite_template;
+  [%expect_exact {|/a//c|}];
+
   let source = {|func foo(bar) {}|} in
   let match_template = {|func :[?receiver] foo(:[args])|} in
   let rewrite_template = {|/:[receiver]/:[args]/|} in
