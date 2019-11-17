@@ -94,7 +94,13 @@ let%expect_test "optional_holes_match_over_coalesced_whitespace" =
   let match_template = {|func :[?receiver] foo(:[args])|} in
   let rewrite_template = {|/:[receiver]/:[args]/|} in
   run source match_template rewrite_template;
-  [%expect_exact {|No matches.|}]
+  [%expect_exact {|No matches.|}];
+
+  let source = {|func (r *receiver) foo(bar) {}|} in
+  let match_template = {|func :[?receiver] foo(:[args])|} in
+  let rewrite_template = {|/:[receiver]/:[args]/|} in
+  run source match_template rewrite_template;
+  [%expect_exact {|/(r *receiver)/bar/ {}|}]
 
 let%expect_test "optional_holes_substitute" =
   let source = {|()|} in

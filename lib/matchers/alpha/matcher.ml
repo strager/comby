@@ -520,89 +520,96 @@ module Make (Syntax : Syntax.S) (Info : Info.S) = struct
     nested_grammar
 
   let turn_holes_into_matchers_for_this_level ?left_delimiter ?right_delimiter p_list =
-    List.fold_right p_list ~init:[] ~f:(fun p acc ->
-        let process_hole =
-          match parse_string p "_signal_hole" (Match.create ()) with
-          | Failed _ -> p
-          | Success Hole { sort; identifier; optional; dimension } ->
-            let rest =
+    List.foldi (List.rev p_list) ~init:[] ~f:(fun i acc p ->
+        match parse_string p "_signal_hole" (Match.create ()) with
+        | Failed _ -> p::acc
+        | Success Hole { sort; identifier; optional; dimension } ->
+          let rest =
+            match acc with
+            | [] -> eof >>= fun () -> f [""]
+            | _ -> sequence_chain acc
+          in
+          let hole_semantics =
+            match sort with
+            | Alphanum ->
+              let allowed =  choice [alphanum; char '_'] |>> String.of_char in
+              many1 allowed
+
+            | Non_space ->
+              let allowed =
+                [skip space; reserved_delimiters ()]
+                |> choice
+                |> is_not
+                |>> Char.to_string
+              in
+              many1 (not_followed_by rest "" >> allowed)
+
+            | Line ->
+              let allowed =
+                many (is_not (char '\n'))
+                |>> fun x -> [(String.of_char_list x)^"\n"]
+              in
+              allowed << char '\n'
+
+            | Blank ->
+              let allowed = blank |>> String.of_char in
+              many1 allowed
+
+            | Everything ->
+              let matcher =
+                match dimension with
+                | Code ->
+                  generate_everything_hole_parser
+                    ?priority_left_delimiter:left_delimiter
+                    ?priority_right_delimiter:right_delimiter
+                | Escapable_string_literal ->
+                  let right_delimiter = Option.value_exn right_delimiter in
+                  escapable_literal_grammar ~right_delimiter
+                | Raw_string_literal ->
+                  let right_delimiter = Option.value_exn right_delimiter in
+                  raw_literal_grammar ~right_delimiter
+                | Comment -> failwith "Unimplemented"
+              in
+              (* Continue until rest, but don't consume rest. *)
+              many (not_followed_by rest "" >> matcher)
+          in
+          if not optional then
+            (record_matches identifier hole_semantics)::acc
+          else
+            begin
+              (* We do not need "attempt" for any of the holes except for \n, because
+                 the \n hole can match empty string (i.e., many makes progress and
+                 'consumes input'), but then fails on \n, and therefore doesn't trigger
+                 optional behavior. So make it attempt and when the \n fails, we return
+                 []. *)
+              let hole_semantics = opt [] (attempt hole_semantics) in
               match acc with
-              | [] -> eof >>= fun () -> f [""]
-              | _ -> sequence_chain acc
-            in
-            let hole_semantics =
-              match sort with
-              | Alphanum ->
-                let allowed =  choice [alphanum; char '_'] |>> String.of_char in
-                many1 allowed
-
-              | Non_space ->
-                let allowed =
-                  [skip space; reserved_delimiters ()]
-                  |> choice
-                  |> is_not
-                  |>> Char.to_string
+              | [] ->
+                (record_matches identifier hole_semantics)::acc
+              | suffix_parser::rest ->
+                let prefix_parser =
+                  match List.nth p_list (i+1) with
+                  | Some p -> p
+                  | None -> fail "unsat"
                 in
-                many1 (not_followed_by rest "" >> allowed)
-
-              | Line ->
-                let allowed =
-                  many (is_not (char '\n'))
-                  |>> fun x -> [(String.of_char_list x)^"\n"]
+                let is_whitespace p =
+                  match
+                    parse_string p " " (Match.create ()),
+                    (* suffix parser could be a hole. It needs to fail on
+                       parsing something like "X" to be a whitespace parser *)
+                    parse_string p "X" (Match.create ())
+                  with
+                  | Success _, Failed _ -> true
+                  | _ -> false
                 in
-                allowed << char '\n'
-
-              | Blank ->
-                let allowed = blank |>> String.of_char in
-                many1 allowed
-
-              | Everything ->
-                let matcher =
-                  match dimension with
-                  | Code ->
-                    generate_everything_hole_parser
-                      ?priority_left_delimiter:left_delimiter
-                      ?priority_right_delimiter:right_delimiter
-                  | Escapable_string_literal ->
-                    let right_delimiter = Option.value_exn right_delimiter in
-                    escapable_literal_grammar ~right_delimiter
-                  | Raw_string_literal ->
-                    let right_delimiter = Option.value_exn right_delimiter in
-                    raw_literal_grammar ~right_delimiter
-                  | Comment -> failwith "Unimplemented"
-                in
-                (* Continue until rest, but don't consume rest. *)
-                many (not_followed_by rest "" >> matcher)
-            in
-            let hole_semantics =
-              if optional then
-                (* We do not need "attempt" for any of the holes except for \n, because
-                   the \n hole can match empty string (i.e., many makes progress and
-                   'consumes input'), but then fails on \n, and therefore doesn't trigger
-                   optional behavior. So make it attempt and when the \n fails, we return
-                   []. *)
-                let p = attempt hole_semantics in
-                match acc with
-                | [] -> opt [] p
-                | previous::_ ->
-                  let is_whitespace =
-                    match parse_string previous " " (Match.create ()) with
-                    | Failed _ -> false
-                    | _ -> true
-                  in
-                  begin
-                    if is_whitespace then
-                      opt [] p
-                    else
-                      opt [] p
-                  end
-              else
-                hole_semantics
-            in
-            record_matches identifier hole_semantics
-          | Success _ -> failwith "Hole expected"
-        in
-        process_hole::acc)
+                begin
+                  if  is_whitespace prefix_parser && is_whitespace suffix_parser then
+                    (record_matches identifier hole_semantics)::rest
+                  else
+                    (record_matches identifier hole_semantics)::acc
+                end
+            end
+        | Success _ -> failwith "Hole expected")
 
   let hole_parser sort dimension =
     let open Hole in
